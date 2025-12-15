@@ -3,6 +3,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from scipy.stats import norm
 
 # Page config
 st.set_page_config(
@@ -340,3 +341,197 @@ with detail_col3:
     st.metric("Breakeven Price", f"${breakeven_price:.2f}")
     st.metric("Net Premium", f"${net_premium:.2f}")
     st.metric("Max Loss", f"${max_loss:.2f}")
+
+# ===============================================================
+# IMPLIED VOLATILITY CALCULATOR (Black-76)
+# ===============================================================
+st.markdown("---")
+st.markdown("### 📈 Implied Volatility Calculator (Black-76)")
+
+# Black-76 pricing functions
+def black76_call(S, K, T, r, sigma):
+    """Calculate Black-76 call option price."""
+    if T <= 0 or sigma <= 0:
+        return max(S - K, 0)
+    d1 = (np.log(S / K) + (sigma ** 2 / 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return np.exp(-r * T) * (S * norm.cdf(d1) - K * norm.cdf(d2))
+
+def black76_put(S, K, T, r, sigma):
+    """Calculate Black-76 put option price."""
+    if T <= 0 or sigma <= 0:
+        return max(K - S, 0)
+    d1 = (np.log(S / K) + (sigma ** 2 / 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    return np.exp(-r * T) * (K * norm.cdf(-d2) - S * norm.cdf(-d1))
+
+def black76_vega(S, K, T, r, sigma):
+    """Calculate Black-76 vega (sensitivity to volatility)."""
+    if T <= 0 or sigma <= 0:
+        return 0
+    d1 = (np.log(S / K) + (sigma ** 2 / 2) * T) / (sigma * np.sqrt(T))
+    return S * np.exp(-r * T) * norm.pdf(d1) * np.sqrt(T)
+
+def find_implied_volatility(market_price, S, K, T, r, option_type='call', max_iterations=100, tolerance=1e-6):
+    """Find implied volatility using Newton-Raphson method."""
+    if T <= 0:
+        return None
+    
+    # Initial guess
+    sigma = 0.5
+    
+    for i in range(max_iterations):
+        if option_type == 'call':
+            price = black76_call(S, K, T, r, sigma)
+        else:
+            price = black76_put(S, K, T, r, sigma)
+        
+        vega = black76_vega(S, K, T, r, sigma)
+        
+        if vega < 1e-10:
+            # Vega too small, try bisection instead
+            break
+        
+        diff = market_price - price
+        
+        if abs(diff) < tolerance:
+            return sigma
+        
+        sigma = sigma + diff / vega
+        
+        # Keep sigma in reasonable bounds
+        sigma = max(0.01, min(sigma, 5.0))
+    
+    # Fallback to bisection method
+    sigma_low, sigma_high = 0.01, 5.0
+    for i in range(100):
+        sigma_mid = (sigma_low + sigma_high) / 2
+        if option_type == 'call':
+            price_mid = black76_call(S, K, T, r, sigma_mid)
+        else:
+            price_mid = black76_put(S, K, T, r, sigma_mid)
+        
+        if abs(price_mid - market_price) < tolerance:
+            return sigma_mid
+        
+        if price_mid < market_price:
+            sigma_low = sigma_mid
+        else:
+            sigma_high = sigma_mid
+    
+    return sigma_mid
+
+# IV Calculator inputs
+iv_col1, iv_col2 = st.columns(2)
+
+with iv_col1:
+    st.markdown("**Market Inputs**")
+    iv_option_type = st.selectbox("Option Type", ["Call", "Put"])
+    iv_market_price = st.number_input("Market Option Price ($)", min_value=0.01, value=5.00, step=0.25)
+    iv_futures_price = st.number_input("Current Futures Price ($)", min_value=1.0, value=72.0, step=1.0)
+    iv_strike = st.number_input("Strike Price ($)", min_value=1.0, value=120.0, step=5.0)
+
+with iv_col2:
+    st.markdown("**Time & Rate**")
+    iv_days_to_expiry = st.number_input("Days to Expiration", min_value=1, value=30, step=1)
+    iv_risk_free_rate = st.number_input("Risk-Free Rate (%)", min_value=0.0, max_value=20.0, value=3.63, step=0.1)
+
+# Calculate IV
+iv_T = iv_days_to_expiry / 365  # Convert to years
+iv_r = iv_risk_free_rate / 100  # Convert to decimal
+
+if st.button("Calculate Implied Volatility", type="primary"):
+    iv_result = find_implied_volatility(
+        iv_market_price, 
+        iv_futures_price, 
+        iv_strike, 
+        iv_T, 
+        iv_r, 
+        option_type=iv_option_type.lower()
+    )
+    
+    if iv_result is not None:
+        # Calculate derived metrics
+        annual_vol = iv_result * 100  # Annualized IV as percentage
+        daily_vol = iv_result / np.sqrt(252) * 100  # Daily volatility (252 trading days)
+        
+        # Standard deviation ranges at expiration
+        # Price move = Futures Price * sigma * sqrt(T)
+        one_std_move = iv_futures_price * iv_result * np.sqrt(iv_T)
+        two_std_move = 2 * one_std_move
+        
+        # Expected price ranges
+        one_std_low = iv_futures_price - one_std_move
+        one_std_high = iv_futures_price + one_std_move
+        two_std_low = iv_futures_price - two_std_move
+        two_std_high = iv_futures_price + two_std_move
+        
+        # Verify the IV by calculating option price
+        if iv_option_type.lower() == 'call':
+            calculated_price = black76_call(iv_futures_price, iv_strike, iv_T, iv_r, iv_result)
+        else:
+            calculated_price = black76_put(iv_futures_price, iv_strike, iv_T, iv_r, iv_result)
+        
+        st.markdown("---")
+        st.markdown("### 📊 Implied Volatility Results")
+        
+        result_col1, result_col2, result_col3 = st.columns(3)
+        
+        with result_col1:
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">Implied Volatility (Annual)</div>
+                <div class="stat-value premium">{annual_vol:.2f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">Daily Volatility</div>
+                <div class="stat-value neutral">{daily_vol:.2f}%</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">Calculated Option Price</div>
+                <div class="stat-value">${calculated_price:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with result_col2:
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">1σ Price Range (68%)</div>
+                <div class="stat-value positive">${one_std_low:.2f} - ${one_std_high:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">1σ Move ($)</div>
+                <div class="stat-value">±${one_std_move:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with result_col3:
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">2σ Price Range (95%)</div>
+                <div class="stat-value negative">${two_std_low:.2f} - ${two_std_high:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown(f"""
+            <div class="stat-box">
+                <div class="stat-label">2σ Move ($)</div>
+                <div class="stat-value">±${two_std_move:.2f}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.info(f"**Interpretation:** Based on the market price of ${iv_market_price:.2f} for the {iv_option_type.lower()}, "
+                f"the market is implying a {annual_vol:.1f}% annualized volatility. "
+                f"This suggests a 68% probability the futures will settle between ${one_std_low:.2f} and ${one_std_high:.2f} "
+                f"at expiration ({iv_days_to_expiry} days).")
+    else:
+        st.error("Could not calculate implied volatility. Please check your inputs.")
