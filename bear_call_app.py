@@ -307,7 +307,7 @@ with col4:
 
 # EV Section
 st.markdown("---")
-st.markdown(f"### 📊 Sell ${strike_price_short_call:.0f} / Buy ${strike_price_long_call:.0f} Expected Value")
+st.markdown(f"### 📊 Sell \${strike_price_short_call:.0f} / Buy \${strike_price_long_call:.0f} Expected Value")
 
 ev_cols = st.columns(5)
 
