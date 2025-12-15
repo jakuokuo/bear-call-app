@@ -157,6 +157,48 @@ def calculate_stats(prices):
 
 stats = calculate_stats(year_data)
 
+# -------------------------------
+# Calculate payout for a given year with custom net premium (for EV calculation)
+# -------------------------------
+def calculate_payout_with_premium(year_prices, custom_net_premium):
+    """Calculate total payout for a year using a custom net premium spread."""
+    if len(year_prices) == 0:
+        return 0
+    
+    hours_to_days = 1 / 16
+    spread_width = strike_price_long_call - strike_price_short_call
+    custom_max_loss = spread_width - custom_net_premium
+    
+    hours_below_short = np.sum(year_prices < strike_price_short_call)
+    hours_above_long = np.sum(year_prices >= strike_price_long_call)
+    
+    days_below_short = hours_below_short * hours_to_days
+    days_above_long = hours_above_long * hours_to_days
+    
+    payout_below = days_below_short * contract_multiplier * custom_net_premium
+    payout_above = days_above_long * contract_multiplier * (-custom_max_loss)
+    
+    prices_between = year_prices[(year_prices >= strike_price_short_call) & (year_prices < strike_price_long_call)]
+    payout_between = 0
+    for price in prices_between:
+        intrinsic_loss = price - strike_price_short_call
+        payoff_per_unit = custom_net_premium - intrinsic_loss
+        payout_between += payoff_per_unit * contract_multiplier * hours_to_days
+    
+    return payout_below + payout_between + payout_above
+
+# Calculate EV for different premium spreads (average across all years)
+premium_spreads = [3, 4, 5, 6, 7]
+ev_by_premium = {}
+
+for premium_spread in premium_spreads:
+    total_payout_all_years = 0
+    for year in years:
+        year_prices = data[data['Year'] == year]['ICE MID-C'].dropna().values
+        total_payout_all_years += calculate_payout_with_premium(year_prices, premium_spread)
+    avg_payout = total_payout_all_years / len(years)
+    ev_by_premium[premium_spread] = round(avg_payout, 2)
+
 # Create payoff curves
 if len(year_data) > 0:
     lo, hi = year_data.min() - 10, year_data.max() + 10
@@ -169,7 +211,7 @@ short_call_payoff = call_payoff(sT, strike_price_short_call, premium_short_call)
 bear_call_payoff = long_call_payoff + short_call_payoff
 
 # Main content
-st.title("🐻 Bear Call Spread Analyzer")
+st.title("Bear Call Spread Analyzer")
 st.markdown(f"### August {selected_year} Settlement Distribution")
 
 # Create the plot
@@ -263,6 +305,23 @@ with col4:
     </div>
     """, unsafe_allow_html=True)
 
+# EV Section
+st.markdown("---")
+st.markdown(f"### 📊 Sell ${strike_price_short_call:.0f} / Buy ${strike_price_long_call:.0f} Expected Value")
+
+ev_cols = st.columns(5)
+
+for i, premium_spread in enumerate(premium_spreads):
+    ev_value = ev_by_premium[premium_spread]
+    ev_class = "positive" if ev_value >= 0 else "negative"
+    with ev_cols[i]:
+        st.markdown(f"""
+        <div class="stat-box">
+            <div class="stat-label">${premium_spread} Premium Spread</div>
+            <div class="stat-value {ev_class}">${ev_value:,.2f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
 # Option details
 st.markdown("---")
 st.markdown("### 📋 Option Details")
@@ -281,4 +340,3 @@ with detail_col3:
     st.metric("Breakeven Price", f"${breakeven_price:.2f}")
     st.metric("Net Premium", f"${net_premium:.2f}")
     st.metric("Max Loss", f"${max_loss:.2f}")
-
